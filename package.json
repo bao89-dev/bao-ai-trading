@@ -1,0 +1,24 @@
+{
+  "name": "bao-ai-trading",
+  "version": "1.0.0",
+  "description": "Bảo AI Trading - TradingView signal processing and Exness automation",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bao89-dev/bao-ai-trading.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/bao89-dev/bao-ai-trading/issues"
+  },
+  "homepage": "https://github.com/bao89-dev/bao-ai-trading#readme",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}
