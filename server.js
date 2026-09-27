@@ -1,17 +1,59 @@
 require("dotenv").config();
+
 const express = require("express");
 
+const { normalizeSignal } = require("./core/signal-normalizer");
+const { analyzeSignal } = require("./core/signal-analyzer");
+const { makeDecision } = require("./core/decision-engine");
+
 const app = express();
+
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_SECRET = process.env.TRADINGVIEW_SECRET;
 
-app.use(express.json());
+// ============================================================
+// EXPRESS CONFIG
+// ============================================================
 
-// ================================
+app.use(express.json({ limit: "1mb" }));
+
+// ============================================================
 // BẢO AI TRADING V2
-// Signal validation engine
-// TEST MODE - CHƯA ĐẶT LỆNH EXNESS
-// ================================
+// SIGNAL VALIDATION + RISK + ANALYSIS + DECISION
+//
+// MODE:
+// TEST / PAPER
+//
+// EXNESS EXECUTION:
+// DISABLED
+//
+// PIPELINE:
+//
+// TradingView / Manual Signal
+//          ↓
+//     Webhook Auth
+//          ↓
+//     Signal Normalizer
+//          ↓
+//    Instrument Check
+//          ↓
+//      Validation
+//          ↓
+//     Risk / Reward
+//          ↓
+//    Signal Analyzer
+//          ↓
+//    Decision Engine
+//          ↓
+//       PAPER
+//          ↓
+//    Execution Disabled
+//
+// ============================================================
+
+// ============================================================
+// ALLOWED SIGNALS
+// ============================================================
 
 const ALLOWED_SIGNALS = ["BUY", "SELL"];
 
@@ -26,9 +68,9 @@ const ALLOWED_TIMEFRAMES = [
   "1D"
 ];
 
-// ================================
+// ============================================================
 // HEALTH CHECK
-// ================================
+// ============================================================
 
 app.get("/", (req, res) => {
   res.json({
@@ -40,9 +82,9 @@ app.get("/", (req, res) => {
   });
 });
 
-// ================================
+// ============================================================
 // SIGNAL VALIDATION
-// ================================
+// ============================================================
 
 function validateSignal(signal) {
   const errors = [];
@@ -52,24 +94,37 @@ function validateSignal(signal) {
     return errors;
   }
 
-  // Symbol
+  // ----------------------------------------------------------
+  // SYMBOL
+  // ----------------------------------------------------------
+
   if (!signal.symbol || typeof signal.symbol !== "string") {
     errors.push("Missing symbol");
   }
 
-  // BUY / SELL
+  // ----------------------------------------------------------
+  // SIGNAL
+  // ----------------------------------------------------------
+
   if (!ALLOWED_SIGNALS.includes(signal.signal)) {
     errors.push("Signal must be BUY or SELL");
   }
 
-  // Timeframe
+  // ----------------------------------------------------------
+  // TIMEFRAME
+  // ----------------------------------------------------------
+
   if (!ALLOWED_TIMEFRAMES.includes(signal.timeframe)) {
     errors.push(
-      "Invalid timeframe. Use 1m, 3m, 5m, 15m, 30m, 1h, 4h or 1D"
+      "Invalid timeframe. Allowed: " +
+      ALLOWED_TIMEFRAMES.join(", ")
     );
   }
 
-  // Score
+  // ----------------------------------------------------------
+  // SCORE
+  // ----------------------------------------------------------
+
   if (
     typeof signal.score !== "number" ||
     signal.score < 0 ||
@@ -78,17 +133,26 @@ function validateSignal(signal) {
     errors.push("Score must be between 0 and 100");
   }
 
-  // Entry
+  // ----------------------------------------------------------
+  // ENTRY
+  // ----------------------------------------------------------
+
   if (typeof signal.entry !== "number") {
     errors.push("Missing or invalid entry");
   }
 
-  // Stop Loss
+  // ----------------------------------------------------------
+  // STOP LOSS
+  // ----------------------------------------------------------
+
   if (typeof signal.stop_loss !== "number") {
     errors.push("Missing or invalid stop_loss");
   }
 
-  // TP1
+  // ----------------------------------------------------------
+  // TAKE PROFIT 1
+  // ----------------------------------------------------------
+
   if (typeof signal.take_profit_1 !== "number") {
     errors.push("Missing or invalid take_profit_1");
   }
@@ -96,9 +160,9 @@ function validateSignal(signal) {
   return errors;
 }
 
-// ================================
-// RISK / REWARD
-// ================================
+// ============================================================
+// RISK / REWARD CALCULATOR
+// ============================================================
 
 function calculateRiskReward(signal) {
   const {
@@ -113,8 +177,13 @@ function calculateRiskReward(signal) {
   let reward1;
   let reward2 = null;
 
+  // ----------------------------------------------------------
+  // BUY
+  // ----------------------------------------------------------
+
   if (direction === "BUY") {
     risk = entry - stop_loss;
+
     reward1 = take_profit_1 - entry;
 
     if (typeof take_profit_2 === "number") {
@@ -122,8 +191,13 @@ function calculateRiskReward(signal) {
     }
   }
 
+  // ----------------------------------------------------------
+  // SELL
+  // ----------------------------------------------------------
+
   if (direction === "SELL") {
     risk = stop_loss - entry;
+
     reward1 = entry - take_profit_1;
 
     if (typeof take_profit_2 === "number") {
@@ -131,16 +205,28 @@ function calculateRiskReward(signal) {
     }
   }
 
-  if (risk <= 0) {
+  // ----------------------------------------------------------
+  // INVALID RISK
+  // ----------------------------------------------------------
+
+  if (
+    typeof risk !== "number" ||
+    !Number.isFinite(risk) ||
+    risk <= 0
+  ) {
     return {
       valid: false,
-      risk: risk,
-      reward1: reward1,
-      reward2: reward2,
+      risk,
+      reward1,
+      reward2,
       rr1: null,
       rr2: null
     };
   }
+
+  // ----------------------------------------------------------
+  // RR CALCULATION
+  // ----------------------------------------------------------
 
   const rr1 = reward1 / risk;
 
@@ -151,160 +237,511 @@ function calculateRiskReward(signal) {
 
   return {
     valid: true,
+
     risk: Number(risk.toFixed(5)),
-    reward1: Number(reward1.toFixed(5)),
+
+    reward1:
+      Number.isFinite(reward1)
+        ? Number(reward1.toFixed(5))
+        : null,
+
     reward2:
-      reward2 !== null
+      reward2 !== null && Number.isFinite(reward2)
         ? Number(reward2.toFixed(5))
         : null,
-    rr1: Number(rr1.toFixed(2)),
+
+    rr1:
+      Number.isFinite(rr1)
+        ? Number(rr1.toFixed(2))
+        : null,
+
     rr2:
-      rr2 !== null
+      rr2 !== null && Number.isFinite(rr2)
         ? Number(rr2.toFixed(2))
         : null
   };
 }
 
-// ================================
+// ============================================================
 // WEBHOOK
-// ================================
+// ============================================================
 
 app.post("/webhook", (req, res) => {
-const incomingSecret = req.headers["x-webhook-secret"];
 
-if (!incomingSecret || incomingSecret !== WEBHOOK_SECRET) {
-  return res.status(401).json({
-    status: "unauthorized",
-    message: "Invalid webhook secret"
-  });
-}
+  // ==========================================================
+  // WEBHOOK AUTHENTICATION
+  // ==========================================================
+
+  const incomingSecret = req.headers["x-webhook-secret"];
+
+  if (
+    !incomingSecret ||
+    incomingSecret !== WEBHOOK_SECRET
+  ) {
+    return res.status(401).json({
+      status: "unauthorized",
+      message: "Invalid webhook secret"
+    });
+  }
+
   console.log("");
-  console.log("================================");
-  console.log("NEW TRADING SIGNAL");
-  console.log("================================");
+  console.log("========================================");
+  console.log("📡 WEBHOOK RECEIVED");
+  console.log("========================================");
 
+  console.log("Raw signal:");
   console.log(req.body);
+
+  // ==========================================================
+  // RAW SIGNAL
+  // ==========================================================
 
   const signal = req.body;
 
-  // Validate
-  const errors = validateSignal(signal);
-  console.log("VALIDATION ERRORS:", errors);
+  // ==========================================================
+  // STEP 1
+  // SIGNAL NORMALIZATION
+  // ==========================================================
+
+  const normalizedResult = normalizeSignal(signal);
+
+  if (!normalizedResult.success) {
+
+    console.log("");
+    console.log("❌ NORMALIZATION FAILED");
+
+    console.log(normalizedResult.errors);
+
+    return res.status(400).json({
+      status: "rejected",
+      mode: "TEST",
+      stage: "normalization",
+      errors: normalizedResult.errors
+    });
+  }
+
+  const normalizedSignal = normalizedResult.signal;
+
+  console.log("");
+  console.log("✅ SIGNAL NORMALIZED");
+
+  console.log(normalizedSignal);
+
+  // ==========================================================
+  // STEP 2
+  // VALIDATION
+  // ==========================================================
+
+  const errors = validateSignal(normalizedSignal);
+
   if (errors.length > 0) {
 
+    console.log("");
     console.log("❌ SIGNAL REJECTED");
+
+    console.log("VALIDATION ERRORS:");
     console.log(errors);
 
     return res.status(400).json({
       status: "rejected",
       mode: "TEST",
-      errors: errors
+      stage: "validation",
+      errors
     });
   }
 
-  // Calculate Risk/Reward
-  const riskReward = calculateRiskReward(signal);
+  console.log("");
+  console.log("✅ SIGNAL VALIDATION PASSED");
+
+  // ==========================================================
+  // STEP 3
+  // RISK / REWARD
+  // ==========================================================
+
+  const riskReward =
+    calculateRiskReward(normalizedSignal);
+
+  console.log("");
+  console.log("📊 RISK / REWARD");
+
+  console.log(riskReward);
+
+  // ----------------------------------------------------------
+  // INVALID RISK
+  // ----------------------------------------------------------
 
   if (!riskReward.valid) {
 
-    console.log("❌ INVALID RISK / REWARD");
+    console.log("");
+    console.log("❌ INVALID RISK STRUCTURE");
 
     return res.status(400).json({
       status: "rejected",
       mode: "TEST",
-      reason: "Invalid risk/reward structure",
+      stage: "risk_reward",
+      message: "Invalid risk structure",
       risk_reward: riskReward
     });
   }
 
-  // Minimum score
+  // ==========================================================
+  // STEP 4
+  // MINIMUM SCORE
+  // ==========================================================
+
   const minimumScore = 80;
 
-  if (signal.score < minimumScore) {
+  if (normalizedSignal.score < minimumScore) {
 
-    console.log("⚠️ SIGNAL REJECTED - LOW SCORE");
+    console.log("");
+    console.log("⏸️ SIGNAL WAITING");
+
+    console.log(
+      `Score ${normalizedSignal.score} < minimum ${minimumScore}`
+    );
 
     return res.json({
-      status: "rejected",
+      status: "waiting",
       mode: "TEST",
-      reason: "Score below minimum threshold",
-      minimum_score: minimumScore,
-      received_score: signal.score,
-      signal: signal
+      stage: "score_filter",
+
+      message:
+        "Signal score is below minimum threshold",
+
+      received_score:
+        normalizedSignal.score,
+
+      minimum_score:
+        minimumScore,
+
+      signal: normalizedSignal,
+
+      risk_reward:
+        riskReward
     });
   }
 
-  // Minimum RR
+  // ==========================================================
+  // STEP 5
+  // MINIMUM RR
+  // ==========================================================
+
   const minimumRR = 1.5;
 
-  if (riskReward.rr1 < minimumRR) {
+  if (
+    riskReward.rr1 === null ||
+    riskReward.rr1 < minimumRR
+  ) {
 
-    console.log("⚠️ SIGNAL REJECTED - LOW RR");
+    console.log("");
+    console.log("❌ SIGNAL REJECTED");
 
-    return res.json({
+    console.log(
+      `RR1 ${riskReward.rr1} < minimum ${minimumRR}`
+    );
+
+    return res.status(400).json({
+
       status: "rejected",
+
       mode: "TEST",
-      reason: "Risk/Reward below minimum threshold",
-      minimum_rr: minimumRR,
-      risk_reward: riskReward,
-      signal: signal
+
+      stage: "risk_reward",
+
+      message:
+        "Risk/Reward ratio is below minimum",
+
+      rr1:
+        riskReward.rr1,
+
+      minimum_rr:
+        minimumRR,
+
+      signal:
+        normalizedSignal,
+
+      risk_reward:
+        riskReward
     });
   }
 
-  // ================================
+  // ==========================================================
+  // STEP 6
+  // SIGNAL ANALYZER
+  // ==========================================================
+
+  const analysisResult =
+    analyzeSignal(
+      normalizedSignal,
+      riskReward
+    );
+
+  if (!analysisResult.success) {
+
+    console.log("");
+    console.log("❌ SIGNAL ANALYSIS FAILED");
+
+    console.log(
+      analysisResult.errors
+    );
+
+    return res.status(400).json({
+
+      status: "rejected",
+
+      mode: "TEST",
+
+      stage: "analysis",
+
+      errors:
+        analysisResult.errors
+    });
+  }
+
+  // ==========================================================
+  // ANALYSIS LOG
+  // ==========================================================
+
+  console.log("");
+  console.log("========================================");
+  console.log("🧠 SIGNAL ANALYSIS");
+  console.log("========================================");
+
+  console.log(
+    "Decision:",
+    analysisResult.analysis.decision
+  );
+
+  console.log(
+    "Confidence:",
+    analysisResult.analysis.confidence
+  );
+
+  console.log(
+    "Risk Level:",
+    analysisResult.analysis.risk.level
+  );
+
+  console.log(
+    "Reasons:",
+    analysisResult.analysis.reasons
+  );
+
+  console.log(
+    "Warnings:",
+    analysisResult.analysis.warnings
+  );
+
+  // ==========================================================
+  // STEP 7
+  // DECISION ENGINE
+  // ==========================================================
+
+  const decisionResult =
+    makeDecision(
+      analysisResult,
+      normalizedSignal
+    );
+
+  if (!decisionResult.success) {
+
+    console.log("");
+    console.log("❌ DECISION ENGINE FAILED");
+
+    console.log(
+      decisionResult.errors
+    );
+
+    return res.status(400).json({
+
+      status: "rejected",
+
+      mode: "TEST",
+
+      stage: "decision",
+
+      errors:
+        decisionResult.errors
+    });
+  }
+
+  // ==========================================================
+  // DECISION LOG
+  // ==========================================================
+
+  console.log("");
+  console.log("========================================");
+  console.log("🧠 DECISION ENGINE");
+  console.log("========================================");
+
+  console.log(
+    "Action:",
+    decisionResult.decision.action
+  );
+
+  console.log(
+    "Confidence:",
+    decisionResult.decision.confidence
+  );
+
+  console.log(
+    "Risk Level:",
+    decisionResult.decision.riskLevel
+  );
+
+  console.log(
+    "Reason Codes:",
+    decisionResult.decision.reasonCodes
+  );
+
+  // ==========================================================
+  // STEP 8
   // SIGNAL ACCEPTED
-  // ================================
+  // ==========================================================
 
+  console.log("");
+  console.log("========================================");
   console.log("🟢 SIGNAL ACCEPTED");
+  console.log("========================================");
 
-  console.log("Symbol:", signal.symbol);
-  console.log("Timeframe:", signal.timeframe);
-  console.log("Signal:", signal.signal);
-  console.log("Score:", signal.score);
-  console.log("Entry:", signal.entry);
-  console.log("SL:", signal.stop_loss);
-  console.log("TP1:", signal.take_profit_1);
-  console.log("TP2:", signal.take_profit_2);
-  console.log("RR1:", riskReward.rr1);
+  console.log(
+    "Symbol:",
+    normalizedSignal.symbol
+  );
 
-  // IMPORTANT:
-  // Chưa gửi lệnh sang Exness.
+  console.log(
+    "Timeframe:",
+    normalizedSignal.timeframe
+  );
 
-  res.json({
+  console.log(
+    "Signal:",
+    normalizedSignal.signal
+  );
+
+  console.log(
+    "Score:",
+    normalizedSignal.score
+  );
+
+  console.log(
+    "Entry:",
+    normalizedSignal.entry
+  );
+
+  console.log(
+    "SL:",
+    normalizedSignal.stop_loss
+  );
+
+  console.log(
+    "TP1:",
+    normalizedSignal.take_profit_1
+  );
+
+  console.log(
+    "TP2:",
+    normalizedSignal.take_profit_2
+  );
+
+  console.log(
+    "RR1:",
+    riskReward.rr1
+  );
+
+  // ==========================================================
+  // STEP 9
+  // RESPONSE
+  // ==========================================================
+
+  return res.json({
+
     status: "accepted",
+
     mode: "TEST",
 
-    signal: {
-      symbol: signal.symbol,
-      timeframe: signal.timeframe,
-      signal: signal.signal,
-      score: signal.score,
-      entry: signal.entry,
-      stop_loss: signal.stop_loss,
-      take_profit_1: signal.take_profit_1,
-      take_profit_2: signal.take_profit_2
-    },
+    signal: normalizedSignal,
 
-    risk_reward: riskReward,
+    risk_reward:
+      riskReward,
+
+    analysis:
+      analysisResult.analysis,
+
+    decision:
+      decisionResult.decision,
 
     execution: {
+
       exness: false,
+
       order_sent: false,
-      message: "Signal accepted. Exness execution is disabled in V2."
+
+      message:
+        "Signal accepted. Exness execution is disabled in V2."
     }
   });
 });
 
-// ================================
-// START SERVER
-// ================================
+// ============================================================
+// ERROR HANDLER
+// ============================================================
+
+app.use((err, req, res, next) => {
+
+  console.error("");
+  console.error("========================================");
+  console.error("❌ SERVER ERROR");
+  console.error("========================================");
+
+  console.error(err);
+
+  return res.status(500).json({
+
+    status: "error",
+
+    mode: "TEST",
+
+    message:
+      "Internal server error"
+  });
+});
+
+// ============================================================
+// SERVER START
+// ============================================================
 
 app.listen(PORT, () => {
+
   console.log("");
-  console.log("================================");
-  console.log("Bao AI Trading V2");
-  console.log("Server running on port " + PORT);
-  console.log("Mode: TEST");
-  console.log("Exness execution: DISABLED");
-  console.log("================================");
+  console.log("========================================");
+  console.log("🚀 BAO AI TRADING V2");
+  console.log("========================================");
+
+  console.log(
+    "Server running on port " + PORT
+  );
+
+  console.log(
+    "Mode: TEST"
+  );
+
+  console.log(
+    "Trading mode: PAPER"
+  );
+
+  console.log(
+    "Exness execution: DISABLED"
+  );
+
+  console.log(
+    "AI Analyzer: RULE-BASED"
+  );
+
+  console.log(
+    "Decision Engine: ENABLED"
+  );
+
+  console.log("========================================");
+  console.log("");
 });
