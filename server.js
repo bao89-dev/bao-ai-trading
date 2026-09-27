@@ -1,7 +1,9 @@
+require("dotenv").config();
 const express = require("express");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const WEBHOOK_SECRET = process.env.TRADINGVIEW_SECRET;
 
 app.use(express.json());
 
@@ -168,7 +170,14 @@ function calculateRiskReward(signal) {
 // ================================
 
 app.post("/webhook", (req, res) => {
+const incomingSecret = req.headers["x-webhook-secret"];
 
+if (!incomingSecret || incomingSecret !== WEBHOOK_SECRET) {
+  return res.status(401).json({
+    status: "unauthorized",
+    message: "Invalid webhook secret"
+  });
+}
   console.log("");
   console.log("================================");
   console.log("NEW TRADING SIGNAL");
@@ -180,7 +189,7 @@ app.post("/webhook", (req, res) => {
 
   // Validate
   const errors = validateSignal(signal);
-
+  console.log("VALIDATION ERRORS:", errors);
   if (errors.length > 0) {
 
     console.log("❌ SIGNAL REJECTED");
